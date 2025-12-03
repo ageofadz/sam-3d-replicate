@@ -3,13 +3,18 @@ import modal
 app = modal.App("sam-3d-objects")
 
 image = (
-    modal.Image.debian_slim(python_version="3.10")
+    modal.Image.from_registry("nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04", add_python="3.10")
     .apt_install("git", "libgl1", "libglib2.0-0")
+    .env({"CUDA_HOME": "/usr/local/cuda"})
     .run_commands(
-        "git clone --recursive https://github.com/ageofadz/sam-3d-replicate.git /src",
-        "cd /src && git pull origin main",
-        "cd /src && git submodule update --init --recursive",
-        "pip install -r /src/requirements.txt"
+        "python3.10 -m ensurepip --upgrade",
+        "python3.10 -m pip install --upgrade pip setuptools wheel",
+        "python3.10 -m pip install appdirs",
+        "git clone https://github.com/ageofadz/sam-3d-replicate.git /src",
+        "git clone https://github.com/facebookresearch/sam-3d-objects.git /src/sam-3d-objects",
+        "python3.10 -m pip install --no-build-isolation nvidia-pyindex==1.0.9",
+        "python3.10 -m pip install -r /src/requirements.txt",
+        "python3.10 -m pip install --no-build-isolation -r /src/sam-3d-objects/requirements.inference.txt"
     )
 )
 
@@ -24,9 +29,13 @@ class SAM3DModel:
     def setup(self):
         import sys
         import os
-        from huggingface_hub import snapshot_download
         
-        sys.path.append("/src/sam-3d-objects/notebook")
+        os.environ["CONDA_PREFIX"] = "/usr/local"
+        os.environ["CUDA_HOME"] = "/usr/local/cuda"
+        
+        sys.path.insert(0, "/src/sam-3d-objects/notebook")
+        
+        from huggingface_hub import snapshot_download
         from inference import Inference
         
         tag = "hf"
@@ -47,7 +56,7 @@ class SAM3DModel:
     def predict(self, image_bytes: bytes, mask_bytes: bytes, mask_index: int = 0, seed: int = 42):
         import tempfile
         import sys
-        sys.path.append("/src/sam-3d-objects/notebook")
+        sys.path.insert(0, "/src/sam-3d-objects/notebook")
         from inference import load_image, load_single_mask
         
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as img_f:
@@ -81,4 +90,3 @@ def main(image_path: str, mask_path: str):
     with open("output.ply", "wb") as f:
         f.write(result)
     print("Saved output to output.ply")
-

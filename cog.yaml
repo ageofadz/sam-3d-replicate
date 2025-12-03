@@ -1,26 +1,30 @@
 build:
-  cuda: "12.1"
   gpu: true
-  python_version: "3.10"
-
+  cuda: "12.1"          # Replicate base; you’ll still install cu128 wheels
+  python_version: "3.11"
   system_packages:
+    - build-essential
+    - cmake
+    - ninja-build
+    - git
     - libgl1
     - libglib2.0-0
-    - git
-
   run:
-    - pip install --find-links https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu121.html torch==2.5.1
+    # 1) Install torch 2.8.0 + cu128 (like the gist)
+    - python -m pip install --upgrade pip
+    - python -m pip install torch==2.8.0+cu128 torchvision==0.23.0+cu128 torchaudio==2.8.0+cu128 --index-url https://download.pytorch.org/whl/cu128
 
-    - git clone --depth 1 https://github.com/facebookresearch/sam-3d-objects.git /src/sam-3d-objects
+    # 2) Install all the other Python deps (copy the gist’s requirements.txt into your repo)
+    - python -m pip install -r requirements.txt
 
-    - bash -c '
-        export PIP_EXTRA_INDEX_URL="https://pypi.ngc.nvidia.com https://download.pytorch.org/whl/cu121";
-        export PIP_FIND_LINKS="https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.5.1_cu121.html";
-        cd /src/sam-3d-objects;
-        pip install -e ".[dev,p3d,inference]"
-      '
+    # 3) Clone & pin sam-3d-objects + build pytorch3d + kaolin
+    - git clone https://github.com/facebookresearch/sam-3d-objects.git /src/sam-3d-objects
+    - cd /src/sam-3d-objects && git checkout 0e3d254f70c388efd10d6deae3f12a1344eb1957
 
-    # 4) Apply the Hydra patch once.
-    - cd /src/sam-3d-objects && python patching/hydra
+    # pytorch3d V0.7.8 (from source, as in the gist)
+    - git clone https://github.com/facebookresearch/pytorch3d.git /src/pytorch3d
+    - cd /src/pytorch3d && git checkout V0.7.8 && python setup.py install
 
-predict: "predict.py:Predictor"
+    # kaolin v0.18.0
+    - git clone https://github.com/NVIDIAGameWorks/kaolin.git /src/kaolin
+    - cd /src/kaolin && git checkout v0.18.0 && python -m pip install -e . --no-build-isolation
