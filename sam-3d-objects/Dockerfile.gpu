@@ -1,0 +1,155 @@
+# ==========================================
+# 1. Base image: CUDA 11.8 + cuDNN8 (Ubuntu 22.04)
+# ==========================================
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Etc/UTC
+
+# ------------------------------------------
+# 2. System deps
+# ------------------------------------------
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    wget \
+    git \
+    build-essential \
+    cmake \
+    ninja-build \
+    libgl1 \
+    libglib2.0-0 \
+    libopenblas-dev \
+    libomp-dev \
+    ffmpeg \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ------------------------------------------
+# 3. Install Miniconda (Python 3.10)
+# ------------------------------------------
+ENV CONDA_DIR=/opt/conda
+RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-py310_24.3.0-0-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p $CONDA_DIR && \
+    rm /tmp/miniconda.sh
+
+ENV PATH=$CONDA_DIR/bin:$PATH
+
+# Make sure python is 3.10
+RUN $CONDA_DIR/bin/conda install -y python=3.10 && $CONDA_DIR/bin/conda clean -afy
+
+# For convenience
+ENV PYTHON_BIN=$CONDA_DIR/bin/python
+ENV PIP_BIN=$CONDA_DIR/bin/pip
+
+# ------------------------------------------
+# 4. Torch 2.1.0 + cu118 (matches PyTorch3D 0.7.7)
+# ------------------------------------------
+RUN $PYTHON_BIN -m pip install --upgrade pip && \
+    $PYTHON_BIN -m pip install \
+    torch==2.1.0+cu118 \
+    torchvision==0.16.0+cu118 \
+    torchaudio==2.1.0+cu118 \
+    --index-url https://download.pytorch.org/whl/cu118
+
+# Quick sanity check: torch + CUDA
+RUN $PYTHON_BIN - << 'EOF'
+import torch
+print("torch:", torch.__version__)
+print("cuda version:", torch.version.cuda)
+print("cuda.is_available:", torch.cuda.is_available())
+EOF
+
+# ------------------------------------------
+# 5. Python deps used by sam-3d-objects
+# ------------------------------------------
+RUN $PYTHON_BIN -m pip install --no-cache-dir \
+    easydict==1.13 \
+    fastapi==0.121.3 \
+    gradio==5.49.0 \
+    gsplat==1.5.3 \
+    hydra-core==1.3.2 \
+    imageio \
+    lightning==2.5.6 \
+    loguru==0.7.2 \
+    matplotlib==3.10.0 \
+    omegaconf==2.3.0 \
+    open3d==0.18.0 \
+    opencv-python==4.9.0.80 \
+    pandas \
+    plyfile \
+    pymeshfix==0.17.0 \
+    pyquaternion==0.9.9 \
+    pyvista \
+    scikit-learn \
+    scipy \
+    seaborn==0.13.2 \
+    timm==0.9.16 \
+    trimesh \
+    uvicorn \
+    spconv-cu118==2.3.6 \
+    bitsandbytes==0.43.0 \
+    huggingface-hub \
+    Pillow \
+    numpy
+
+# ------------------------------------------
+# 6. MoGe (pinned commit with utils3d)
+# ------------------------------------------
+RUN $PYTHON_BIN -m pip install --no-cache-dir \
+    "MoGe @ git+https://github.com/microsoft/MoGe.git@a8c37341bc0325ca99b9d57981cc3bb2bd3e255b"
+
+# Warp for Kaolin
+RUN $PYTHON_BIN -m pip install --no-cache-dir "warp-lang==1.6.0"
+
+# ------------------------------------------
+# 7. Kaolin v0.18.0 (uses CUDA 11.8)
+# ------------------------------------------
+RUN $PYTHON_BIN -m pip install --no-cache-dir "Cython>=0.29.37"
+
+RUN git clone https://github.com/NVIDIAGameWorks/kaolin.git /opt/kaolin && \
+    cd /opt/kaolin && \
+    git checkout v0.18.0 && \
+    git submodule update --init --recursive && \
+    CUDA_HOME=/usr/local/cuda \
+    TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6" \
+    $PYTHON_BIN setup.py install
+
+# ------------------------------------------
+# 8. PyTorch3D v0.7.7 from source
+# ------------------------------------------
+RUN git clone https://github.com/facebookresearch/pytorch3d.git /opt/pytorch3d && \
+    cd /opt/pytorch3d && \
+    git checkout v0.7.7 && \
+    CUDA_HOME=/usr/local/cuda \
+    TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6" \
+    FORCE_CUDA=1 \
+    $PYTHON_BIN -m pip install --no-cache-dir --no-build-isolation .
+
+# Sanity check: can we import pytorch3d?
+RUN $PYTHON_BIN - << 'EOF'
+import torch
+import pytorch3d
+print("pytorch3d import OK, torch:", torch.__version__)
+EOF
+
+# ------------------------------------------
+# 9. Copy your repo into the container
+# ------------------------------------------
+WORKDIR /workspace
+COPY . /workspace
+
+# ------------------------------------------
+# 10. Install sam-3d-objects (editable, no deps)
+# ------------------------------------------
+RUN $PYTHON_BIN -m pip install --no-cache-dir -e . --no-deps
+
+# ------------------------------------------
+# 11. Copy API server & expose port
+# ------------------------------------------
+COPY app_server.py /workspace/app_server.py
+EXPOSE 8000
+
+# ------------------------------------------
+# 12. Entrypoint: always use conda’s uvicorn
+# ------------------------------------------
+CMD ["/opt/conda/bin/uvicorn", "app_server:app", "--host", "0.0.0.0", "--port", "8000"]
